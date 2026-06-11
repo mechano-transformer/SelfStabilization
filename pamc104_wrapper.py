@@ -250,6 +250,23 @@ class PAMC104:
         """PAMC204 クラスとの互換性のため move_pulses の別名として提供。"""
         return self.move_pulses(channel, pulses)
 
+    def move_infinite(self, channel: int, direction: str) -> bool:
+        """無限移動（パルス数 0000 = 連続駆動）。PAMC204 互換。
+
+        Args:
+            channel:   チャンネル番号（1-4）
+            direction: '+' または '-'
+        Returns:
+            bool: コマンド送信成功かどうか
+        """
+        if not self.is_connected:
+            return False
+        ch = _CH_LETTER.get(channel, 'A')
+        cmd_prefix = "NR" if direction == '+' else "RR"
+        cmd = f"{cmd_prefix}{self.VELOCITY_HZ:04d}0000{ch}"
+        resp = self._send_cmd(cmd, flush_before=True)
+        return resp == "OK"
+
     def stop(self) -> str:
         """駆動停止（S コマンド）。
 

@@ -229,6 +229,33 @@ class PAMC204:
         print(f"Query motion status var answer: {val}") #デバッグ　20260414
         return None if val == -1 else val
 
+    def move_infinite(self, channel, direction):
+        """無限移動（ExxmMVn）。例: E011MV+
+
+        Args:
+            channel:   チャンネル番号（1-4）
+            direction: '+' または '-'（移動方向）
+        Returns:
+            bool: コマンド送信成功かどうか
+        """
+        if not self.is_connected:
+            return False
+        d = b'+' if direction == '+' else b'-'
+        return bool(self.lib.pamc204_move_infinite(self.address, channel, d))
+
+    def set_velocity(self, channel, velocity):
+        """速度設定（ExxmVAnnnn）。例: E011VA1500
+
+        Args:
+            channel:  チャンネル番号（1-4）
+            velocity: 速度（1〜1500 steps/sec）
+        Returns:
+            bool: コマンド送信成功かどうか
+        """
+        if not self.is_connected:
+            return False
+        return bool(self.lib.pamc204_set_velocity(self.address, channel, velocity))
+
     def stop_motion(self, channel):
         """動作停止（ExxmST）。例: E011ST"""
         if not self.is_connected:
