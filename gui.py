@@ -19,12 +19,12 @@ import serial.tools.list_ports
 
 import math
 
-from .pamc204_wrapper import PAMC204
-from .pamc104_wrapper import PAMC104
-from .ac_thread import AcThread
-from .adc_thread import ADCControlThread
-from .auto_divisioner import AutoDivisionerThread
-from .position_routine import PositionRoutineThread
+from pamc204_wrapper import PAMC204
+from pamc104_wrapper import PAMC104
+from ac_thread import AcThread
+from adc_thread import ADCControlThread
+from auto_divisioner import AutoDivisionerThread
+from position_routine import PositionRoutineThread
 
 
 class PiezoMode(str, Enum):
