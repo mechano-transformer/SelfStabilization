@@ -927,7 +927,18 @@ class ADCGUI(tk.Tk):
             self.ADC_status_label.config(text="ADC: Active", fg="green")
             print("ADC control started")
 
-    def stop_ADC(self):
+    def _on_ADC_converged(self):
+        """ADCスレッドから呼ばれる収束通知。表示を更新し自動停止する。"""
+        self.update_ADC_display()
+        self.ADC_status_label.config(text="ADC: Converged", fg="blue")
+        print("ADC converged — auto-stopping")
+        self.stop_ADC(converged=True)
+        messagebox.showinfo("ADC Converged",
+            f"収束しました\n\n"
+            f"X Error: {self.ADC_error_x:.4f}\n"
+            f"Y Error: {self.ADC_error_y:.4f}")
+
+    def stop_ADC(self, converged: bool = False):
         """ADC 制御ループを停止する。"""
         self.ADC_active = False
         if self.ADC_worker and self.ADC_worker.running:
@@ -936,7 +947,8 @@ class ADCGUI(tk.Tk):
 
         self.ADC_start_btn.config(state=tk.NORMAL)
         self.ADC_stop_btn.config(state=tk.DISABLED)
-        self.ADC_status_label.config(text="ADC: Inactive", fg="red")
+        if not converged:
+            self.ADC_status_label.config(text="ADC: Inactive", fg="red")
         print("ADC control stopped")
 
     # ================================================================
