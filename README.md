@@ -1,3 +1,9 @@
+# Self Stabilizer
+## メモ 2026/06/11
+- `python main.py`でプログラム実行
+
+
+
 # Autocollimator & Piezo Motor Alignment Demo
 
 オートコリメータ（自動準直器）とピエゾモーターコントローラーを組み合わせた、
