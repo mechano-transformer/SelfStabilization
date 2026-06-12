@@ -27,26 +27,26 @@
 **コマンドを1回だけ送信してモーターを走らせっぱなし**にする方式に変更した。
 
 ```
-|error| > threshold * 2  →  SLEW (連続駆動: 999999パルスで走らせっぱなし)
+|error| > threshold * 2  →  SLEW (無限移動コマンドで走らせっぱなし)
 |error| <= threshold * 2  →  NEAR (PD制御で精密追い込み)
 |error| <= threshold      →  CONVERGED → 自動停止 + ポップアップ
 ```
 
-### SLEW フェーズ — 連続駆動
+### SLEW フェーズ — 無限移動 (ExxmMV+/-)
 
 目標: ハードウェア最大速度 (1500 Hz) をフルに使って最速で近傍に到達する。
 
-- `move_relative(axis, ±999999)` を **1回だけ送信** → モーターが 1500Hz で走り続ける
+- `move_infinite(axis, '+'/'-')` (= `ExxmMVn` コマンド) を **1回だけ送信** → モーターが 1500Hz で無限に走り続ける
 - 10ms ごとにオートコリメータを読んで近傍境界を監視する **だけ** (コマンド送信なし)
-- 近傍に入った瞬間 `stop_motion` で即停止
+- 近傍に入った瞬間 `stop_motion` (= `ExxmST`) で即停止
 - 方向が反転した場合は停止→再発進
 - **X/Y 軸を独立に制御** — 各軸が個別に SLEW/NEAR を遷移する
 
 従来方式との比較:
 
-| | 従来方式 | SLEW 方式 |
+| | 従来方式 | SLEW 方式 (move_infinite) |
 |---|---|---|
-| コマンド送信 | 毎ステップ | 開始時1回 + 停止時1回 |
+| 使用コマンド | `ExxmPRn` (相対移動) 毎ステップ | `ExxmMV+/-` 開始1回 + `ExxmST` 停止1回 |
 | モーター稼働率 | 断続的 (送信待ちで停止) | **連続 100%** |
 | 1500Hz 利用率 | 低い | **最大** |
 | 制御ループの役割 | パルス計算+送信 | 監視のみ |
@@ -76,11 +76,22 @@ PD制御を選択した理由:
 - ADC 停止時、SLEW 中の軸は `stop_motion` で確実に停止
 - SLEW 中に方向反転を検知したら即停止→再発進
 
+## 使用コマンド (PAMC-204 マニュアル準拠)
+
+| コマンド | 構文 | 用途 | ADCでの使用箇所 |
+|---|---|---|---|
+| 無限移動 | `ExxmMV+` / `ExxmMV-` | 指定CHを無限移動 | SLEW フェーズ |
+| 動作停止 | `ExxmST` | 指定CHを停止 | SLEW→NEAR 遷移 / ADC停止 |
+| 相対移動 | `ExxmPRnnnn` | 指定ステップ移動 | NEAR フェーズ (PD制御) |
+| 速度設定 | `ExxmVAnnnn` | 速度 1〜1500 Hz | connect() 時に 1500 Hz 固定 |
+| 動作確認 | `ExxmMD?` | 駆動中=0 / 停止=1 | wait_for_stop() |
+| 実位置 | `ExxmTP?` | 現在位置取得 | デバッグ用 |
+| 全軸停止 | `ExxAB` | 全CH即停止 | abort_motion() |
+
 ## パラメータ
 
 | パラメータ | 値 | 説明 |
 |---|---|---|
-| `SLEW_PULSES` | 999999 | 連続駆動パルス数 (1500Hz で ~666秒) |
 | `NEAR_BOUNDARY_MULT` | 2.0 | SLEW→NEAR 切替境界 (threshold の倍数) |
 | `Kp` (NEAR) | max(lr, 1.0) | PD比例ゲイン |
 | `Kd` (NEAR) | Kp * 0.4 | PD微分ゲイン |
@@ -99,7 +110,7 @@ Start ADC
 誤差計算 (error_x, error_y) ←──────────┐
   │                                      │
   ├─ X軸: |err| > thr*2 かつ非SLEW中     │
-  │   → move_relative(±999999) [SLEW開始] │
+  │   → move_infinite(+/-) [SLEW開始]    │
   │                                      │
   ├─ X軸: SLEW中 かつ |err| <= thr*2     │
   │   → stop_motion [SLEW停止]           │
