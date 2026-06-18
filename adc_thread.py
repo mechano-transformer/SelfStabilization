@@ -1,18 +1,22 @@
 """
-ADC 制御スレッド — 単純P制御 + 時間ベース待機（CLI版と同一ロジック）
+ADC 制御スレッド — P制御 + 時間ベース待機 + 詳細ログ
 """
 import threading
 import time
+import numpy as np
 
 # ---------------------------------------------------------------------------
-ADC_LEARNING_RATE: float = 0.7
-ADC_MAX_STEP_PULSES: int = 50000
-ADC_PULSES_PER_UNIT: float = 37.0
-ADC_CONVERGENCE_THR: float = 0.1
+ADC_LEARNING_RATE: float = 0.3
+ADC_MIN_STEP_PULSES: int = 1
+ADC_MAX_STEP_PULSES: int = 10000
+ADC_PULSES_PER_UNIT: float = round(1000 / 2.74, 2)
+ADC_CONVERGENCE_THR: float = 0.01
 ADC_SAMPLE_PERIOD: float = 0.5
-ADC_SETTLE_TIME: float = 0.1
 
 MOTOR_HZ: float = 1500.0
+AC_PERIOD: float = 0.5
+FAR_KP: float = 0.9
+NEAR_MULT: float = 5.0
 # ---------------------------------------------------------------------------
 
 
@@ -29,18 +33,23 @@ class ADCControlThread(threading.Thread):
         self.pulses_per_unit: float = ADC_PULSES_PER_UNIT
         self.learning_rate_x: float = ADC_LEARNING_RATE
         self.learning_rate_y: float = ADC_LEARNING_RATE
+        self.min_step_pulses: int = ADC_MIN_STEP_PULSES
         self.max_step_pulses: int = ADC_MAX_STEP_PULSES
         self.convergence_threshold: float = ADC_CONVERGENCE_THR
-        self.settle_time: float = ADC_SETTLE_TIME
+        self.settle_time: float = 0.0
+
+        self.prev_error_x: float = 0.0
+        self.prev_error_y: float = 0.0
+        self.prev_pulses_x: int = 0
+        self.prev_pulses_y: int = 0
 
     def run(self) -> None:
         self.running = True
         iteration = 0
         print("ADC control thread started")
         print(f"  pulses_per_unit={self.pulses_per_unit}")
-        print(f"  kp_x={self.learning_rate_x}, kp_y={self.learning_rate_y}")
+        print(f"  lr_x={self.learning_rate_x}, lr_y={self.learning_rate_y}")
         print(f"  max_step={self.max_step_pulses}, threshold={self.convergence_threshold}")
-        print(f"  settle={self.settle_time}s")
         print(f"  swap_axes={self.master.swap_axes}")
         print(f"  reverse_axis1={self.master.reverse_axis1}, reverse_axis2={self.master.reverse_axis2}")
 
@@ -68,11 +77,16 @@ class ADCControlThread(threading.Thread):
             return 1, 2
         return 2, 1
 
-    def _calc_pulses(self, error: float, kp: float) -> int:
+    def _calc_pulses(self, error: float, learning_rate: float) -> int:
         if abs(error) <= self.convergence_threshold:
             return 0
+        near_zone = self.convergence_threshold * NEAR_MULT
+        kp = FAR_KP if abs(error) > near_zone else learning_rate
         pulses = -int(round(kp * error * self.pulses_per_unit))
-        pulses = max(-self.max_step_pulses, min(self.max_step_pulses, pulses))
+        if abs(error) <= near_zone:
+            pulses = int(np.clip(pulses, -self.max_step_pulses, self.max_step_pulses))
+        if abs(pulses) < self.min_step_pulses:
+            pulses = self.min_step_pulses if error < 0 else -self.min_step_pulses
         return pulses
 
     def _apply_reverse(self, pulses: int, axis: int) -> int:
@@ -91,7 +105,7 @@ class ADCControlThread(threading.Thread):
             print(f"  [FAIL] move_relative ch{axis} {pulses:+d}")
             return False
         drive_time = abs(pulses) / MOTOR_HZ
-        time.sleep(drive_time + self.settle_time)
+        time.sleep(drive_time + AC_PERIOD)
         return True
 
     def _control_step(self, iteration: int) -> None:
@@ -123,6 +137,9 @@ class ADCControlThread(threading.Thread):
         if pulses_y != 0:
             self._move_and_wait(axis_y, pulses_y)
             self.master.ADC_total_pulses_y += pulses_y
+
+        self.prev_error_x = error_x
+        self.prev_error_y = error_y
 
         if abs(error_x) <= self.convergence_threshold and abs(error_y) <= self.convergence_threshold:
             print(f"ADC [{iteration}] CONVERGED")
