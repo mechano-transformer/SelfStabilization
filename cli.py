@@ -187,7 +187,7 @@ def cmd_test_dir(ac: AutocollimatorCLI, pamc: PAMC204CLI, ch: int, pulses: int):
 
 
 def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
-    """ADC制御ループ (CLI版)。"""
+    """ADC制御ループ (CLI版)。単純P制御、最小待ち時間。"""
     target_x = args.target_x
     target_y = args.target_y
     kp = args.kp
@@ -198,6 +198,7 @@ def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
     swap = args.swap
     rev1 = args.rev1
     rev2 = args.rev2
+    settle = args.settle
 
     if swap:
         axis_x, axis_y = 1, 2
@@ -205,13 +206,10 @@ def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
         axis_x, axis_y = 2, 1
 
     print(f"ADC CLI: target=({target_x}, {target_y}) kp={kp} ppu={ppu} "
-          f"threshold={threshold} max_step={max_step}")
+          f"threshold={threshold} settle={settle}s")
     print(f"  axis_x=ch{axis_x} axis_y=ch{axis_y} swap={swap} rev1={rev1} rev2={rev2}")
-    print(f"{'iter':>4}  {'err_x':>10}  {'err_y':>10}  {'pls_x':>8}  {'pls_y':>8}  {'status'}")
-    print("-" * 70)
-
-    prev_err_x = 0.0
-    prev_err_y = 0.0
+    print(f"{'iter':>4}  {'err_x':>10}  {'err_y':>10}  {'pls_x':>8}  {'pls_y':>8}")
+    print("-" * 60)
 
     for i in range(max_iter):
         data = ac.read()
@@ -232,7 +230,7 @@ def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
             print(f"=====================")
             return
 
-        # X
+        # X パルス計算
         pulses_x = -int(round(kp * err_x * ppu))
         pulses_x = max(-max_step, min(max_step, pulses_x))
         if axis_x == 1 and rev1:
@@ -240,7 +238,7 @@ def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
         elif axis_x == 2 and rev2:
             pulses_x = -pulses_x
 
-        # Y
+        # Y パルス計算
         pulses_y = -int(round(kp * err_y * ppu))
         pulses_y = max(-max_step, min(max_step, pulses_y))
         if axis_y == 1 and rev1:
@@ -248,21 +246,27 @@ def cmd_adc(ac: AutocollimatorCLI, pamc: PAMC204CLI, args):
         elif axis_y == 2 and rev2:
             pulses_y = -pulses_y
 
-        status = "FAR" if abs(err_x) > threshold * 5 or abs(err_y) > threshold * 5 else "NEAR"
-        print(f"{i:4d}  {err_x:+10.4f}  {err_y:+10.4f}  {pulses_x:+8d}  {pulses_y:+8d}  {status}")
+        print(f"{i:4d}  {err_x:+10.4f}  {err_y:+10.4f}  {pulses_x:+8d}  {pulses_y:+8d}")
+
+        max_drive = 0.0
 
         # X 駆動
         if abs(err_x) > threshold and pulses_x != 0:
             pamc.move_relative(axis_x, pulses_x)
-            time.sleep(abs(pulses_x) / 1500.0 + 0.5)
+            drive_x = abs(pulses_x) / 1500.0
+            time.sleep(drive_x)
+            max_drive = drive_x
 
         # Y 駆動
         if abs(err_y) > threshold and pulses_y != 0:
             pamc.move_relative(axis_y, pulses_y)
-            time.sleep(abs(pulses_y) / 1500.0 + 0.5)
+            drive_y = abs(pulses_y) / 1500.0
+            time.sleep(drive_y)
+            if drive_y > max_drive:
+                max_drive = drive_y
 
-        prev_err_x = err_x
-        prev_err_y = err_y
+        # 駆動後のセトル待ち（AC読み取り安定化用、最小限）
+        time.sleep(settle)
 
     print(f"\nMax iterations ({max_iter}) reached without convergence")
 
@@ -310,6 +314,7 @@ def main():
     p_adc.add_argument("--swap", action="store_true")
     p_adc.add_argument("--rev1", action="store_true")
     p_adc.add_argument("--rev2", action="store_true")
+    p_adc.add_argument("--settle", type=float, default=0.1, help="Post-drive settle time (s)")
 
     args = parser.parse_args()
 
