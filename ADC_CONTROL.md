@@ -1,105 +1,70 @@
 # ADC 制御方式ドキュメント
 
-## 背景と課題
+## 概要
 
-ピエゾモーターコントローラー (PAMC-204) の駆動速度上限は **1500 Hz** (1500 pulses/sec) であり、
-ハードウェア的にこれを超えることはできない。
+オートコリメータの読み取り誤差をゼロに収束させる P 制御ループ。
+CLI (`cli.py adc`) と GUI (`adc_thread.py`) で同一ロジックを使用する。
 
-従来の制御方式では以下のループを回していた:
-
-```
-誤差計算 → パルス数計算 → move_relative 送信 → 完了待ち (wait_for_stop) → 再計算 → ...
-```
-
-この方式の問題点:
-- **コマンド送信のたびにブロッキング**: `wait_for_stop` でモーター停止を待つため、
-  「送信→待ち→停止→再送信→...」のオーバーヘッドが蓄積する
-- **パルス間のアイドル時間**: コマンド処理・通信遅延の間モーターが止まっており、
-  1500 Hz の速度を連続的に使い切れない
-- **fire-and-forget にしても改善しない**: 前のコマンド実行中に次を送ると BUSY で弾かれるため、
-  結局モーター停止を待つのと変わらない
-- ソフト側のゲインやループ周期をいくら最適化しても、
-  ハードウェア速度を使い切れないこの構造的問題は解消できない
-
-## 解決: 3段階制御 (SLEW + PD + 収束停止)
-
-ハードウェア上限 1500 Hz をフル活用するため、遠方では
-**コマンドを1回だけ送信してモーターを走らせっぱなし**にする方式に変更した。
+## 制御方式: 単純 P 制御 + 順次駆動
 
 ```
-|error| > threshold * 2  →  SLEW (無限移動コマンドで走らせっぱなし)
-|error| <= threshold * 2  →  NEAR (PD制御で精密追い込み)
-|error| <= threshold      →  CONVERGED → 自動停止 + ポップアップ
+AC読み取り → 誤差計算 → パルス計算 → X軸駆動+待ち → Y軸駆動+待ち → 繰り返し
 ```
 
-### SLEW フェーズ — 無限移動 (ExxmMV+/-)
+PAMC-204 は同時2軸駆動非対応のため、X → Y の順に順次駆動する。
 
-目標: ハードウェア最大速度 (1500 Hz) をフルに使って最速で近傍に到達する。
+### パルス計算
 
-- `move_infinite(axis, '+'/'-')` (= `ExxmMVn` コマンド) を **1回だけ送信** → モーターが 1500Hz で無限に走り続ける
-- 10ms ごとにオートコリメータを読んで近傍境界を監視する **だけ** (コマンド送信なし)
-- 近傍に入った瞬間 `stop_motion` (= `ExxmST`) で即停止
-- 方向が反転した場合は停止→再発進
-- **X/Y 軸を独立に制御** — 各軸が個別に SLEW/NEAR を遷移する
+```
+pulses = -round(Kp × error_um × ppu)
+pulses = clamp(pulses, -max_step, +max_step)
+if reverse: pulses = -pulses
+```
 
-従来方式との比較:
+- `error_um`: 現在位置 - 目標位置（um 単位）
+- `ppu`: pulses per um（実測値 ≈ 37）
+- `Kp`: 比例ゲイン（推奨 0.7）
 
-| | 従来方式 | SLEW 方式 (move_infinite) |
-|---|---|---|
-| 使用コマンド | `ExxmPRn` (相対移動) 毎ステップ | `ExxmMV+/-` 開始1回 + `ExxmST` 停止1回 |
-| モーター稼働率 | 断続的 (送信待ちで停止) | **連続 100%** |
-| 1500Hz 利用率 | 低い | **最大** |
-| 制御ループの役割 | パルス計算+送信 | 監視のみ |
+### 待ち時間
 
-### NEAR フェーズ — PD制御
+各軸駆動後: `|pulses| / 1500 + 0.5s`
 
-目標: 振動なく最速で収束。
-
-- **P項**: `Kp = max(learning_rate, 1.0)` — デッドビート狙い
-- **D項**: `Kd = Kp * 0.4` — 誤差変化率で制動
-- `pulses = -(Kp * error + Kd * d_error) * pulses_per_unit`
-- fire-and-forget (完了待ちなし)、10ms ループ
-
-PD制御を選択した理由:
-- プラント (ピエゾモーター) が積分器なので **I項は不要** (二重積分で不安定化する)
-- D項の制動効果で P ゲインを 1.0 以上に上げられる
+- 1500 Hz = モーター駆動速度（ハードウェア上限）
+- 0.5s = 機械的セトル + AC 読み取り安定化
 
 ### 収束判定
 
-両軸が `convergence_threshold` 以内 かつ SLEW 中でなければ:
-1. GUI「ADC: Converged」(青) 表示
-2. 自動停止 (Start/Stop インタロック復帰)
-3. ポップアップ通知
-
-### 安全機構
-
-- ADC 停止時、SLEW 中の軸は `stop_motion` で確実に停止
-- SLEW 中に方向反転を検知したら即停止→再発進
-
-## 使用コマンド (PAMC-204 マニュアル準拠)
-
-| コマンド | 構文 | 用途 | ADCでの使用箇所 |
-|---|---|---|---|
-| 無限移動 | `ExxmMV+` / `ExxmMV-` | 指定CHを無限移動 | SLEW フェーズ |
-| 動作停止 | `ExxmST` | 指定CHを停止 | SLEW→NEAR 遷移 / ADC停止 |
-| 相対移動 | `ExxmPRnnnn` | 指定ステップ移動 | NEAR フェーズ (PD制御) |
-| 速度設定 | `ExxmVAnnnn` | 速度 1〜1500 Hz | connect() 時に 1500 Hz 固定 |
-| 動作確認 | `ExxmMD?` | 駆動中=0 / 停止=1 | wait_for_stop() |
-| 実位置 | `ExxmTP?` | 現在位置取得 | デバッグ用 |
-| 全軸停止 | `ExxAB` | 全CH即停止 | abort_motion() |
+両軸の |error| ≤ threshold で収束。CLI は自動終了、GUI は自動停止 + 表示更新。
 
 ## パラメータ
 
 | パラメータ | 値 | 説明 |
 |---|---|---|
-| `NEAR_BOUNDARY_MULT` | 2.0 | SLEW→NEAR 切替境界 (threshold の倍数) |
-| `Kp` (NEAR) | max(lr, 1.0) | PD比例ゲイン |
-| `Kd` (NEAR) | Kp * 0.4 | PD微分ゲイン |
-| `ADC_LEARNING_RATE` | 0.7 | Kp の下限 (GUI変更可) |
-| `ADC_MAX_STEP_PULSES` | 10000 | NEAR の最大パルス |
-| `ADC_CONVERGENCE_THR` | 0.01 | 収束閾値 |
-| ループ間隔 | 10ms | 全フェーズ共通 |
-| モーター速度 | 1500 Hz | ハードウェア上限 |
+| `Kp` | 0.7 | 比例ゲイン（GUI/CLI 共通デフォルト） |
+| `ppu` | 37.0 | pulses/um（実測キャリブレーション値） |
+| `threshold` | 0.1 um | 収束閾値 |
+| `max_step` | 50000 | 1ステップ最大パルス数 |
+| モーター速度 | 1500 Hz | ハードウェア上限、固定 |
+| セトル時間 | 0.5s | 駆動後の待ち時間 |
+
+## 軸構成（現在の実機）
+
+| 設定 | 値 | 意味 |
+|---|---|---|
+| PAMC-204 Address | 2 (E02) | デバイスアドレス |
+| Swap X/Y | OFF | X→ch2, Y→ch1 |
+| Reverse Axis 1 | **ON** | ch1 +パルス → Y 減少方向 |
+| Reverse Axis 2 | OFF | ch2 +パルス → X 増加方向 |
+| AC Port | COM11 | オートコリメータ（38400bps） |
+| PAMC-204 Port | COM10 | USB Serial (FTDI) |
+
+## 使用コマンド (PAMC-204)
+
+| コマンド | 構文 | 用途 |
+|---|---|---|
+| 相対移動 | `ExxmPRnnnn` | P制御によるステップ駆動 |
+| 速度設定 | `ExxmVAnnnn` | connect() 時に 1500 Hz 固定 |
+| 全軸停止 | `ExxAB` | 緊急停止 |
 
 ## 制御フロー図
 
@@ -107,20 +72,23 @@ PD制御を選択した理由:
 Start ADC
   │
   ▼
-誤差計算 (error_x, error_y) ←──────────┐
+AC読み取り (pos_x, pos_y in um) ←──────┐
   │                                      │
-  ├─ X軸: |err| > thr*2 かつ非SLEW中     │
-  │   → move_infinite(+/-) [SLEW開始]    │
+  ├─ err_x = pos_x - target_x           │
+  ├─ err_y = pos_y - target_y           │
   │                                      │
-  ├─ X軸: SLEW中 かつ |err| <= thr*2     │
-  │   → stop_motion [SLEW停止]           │
+  ├─ 両軸 |err| ≤ threshold             │
+  │   → CONVERGED → 自動停止            │
   │                                      │
-  ├─ X軸: thr < |err| <= thr*2           │
-  │   → PD制御 move_relative             │
+  ├─ |err_x| > threshold                │
+  │   → pulses = -round(Kp*err*ppu)     │
+  │   → move_relative(ch_x, pulses)     │
+  │   → sleep(|pulses|/1500 + 0.5)      │
   │                                      │
-  ├─ (Y軸も同様に独立処理)                │
+  ├─ |err_y| > threshold                │
+  │   → pulses = -round(Kp*err*ppu)     │
+  │   → move_relative(ch_y, pulses)     │
+  │   → sleep(|pulses|/1500 + 0.5)      │
   │                                      │
-  ├─ 両軸 <= thr → 収束 → 自動停止        │
-  │                                      │
-  └─ 10ms sleep ─────────────────────────┘
+  └──────────────────────────────────────┘
 ```
