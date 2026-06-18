@@ -115,7 +115,7 @@ class ADCGUI(tk.Tk):
         self.logging_sample_period: float = 0.1
 
         # ── 軸設定 ────────────────────────────────────────────────
-        self.reverse_axis1: bool = False
+        self.reverse_axis1: bool = True
         self.reverse_axis2: bool = False
         self.swap_axes: bool = False
 
@@ -325,7 +325,7 @@ class ADCGUI(tk.Tk):
         config_frame = tk.LabelFrame(self.piezo_frame, text="Configuration", padx=10, pady=10)
         config_frame.pack(pady=10, fill=tk.X)
 
-        self.reverse_axis1_var = tk.BooleanVar(value=False)
+        self.reverse_axis1_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             config_frame, text="Reverse Axis 1",
             variable=self.reverse_axis1_var,
@@ -390,13 +390,10 @@ class ADCGUI(tk.Tk):
             return v
 
         self.ADC_period_var                = _row("Sample Period (s):",               "0.5")
-        self.ADC_lr_var                    = _row("Learning Rate:",                    "0.3")
-        self.ADC_min_step_var              = _row("Min Step (pulses):",                "1")
-        self.ADC_max_step_var              = _row("Max Step (pulses):",                "10000")
-##        self.ADC_pulses_per_unit_var       = _row("Piezo Calibration (pulses/angle):", str(int(round(1000 / 2.74, 0))))
-        self.ADC_pulses_per_unit_var       = _row("Piezo Calibration (pulses/um):", "1")
+        self.ADC_lr_var                    = _row("Kp (Proportional Gain):",            "0.7")
+        self.ADC_max_step_var              = _row("Max Step (pulses):",                "50000")
+        self.ADC_pulses_per_unit_var       = _row("Piezo Calibration (pulses/um):",    "37")
         self.ADC_convergence_threshold_var = _row("Convergence Threshold:",            "0.1")
-        self.ADC_settle_time_var           = _row("Settle Time (s):",                  "0.2")
 
     def _setup_logging_tab(self, parent):
         logging_frame = tk.LabelFrame(parent, text="Data Logging", padx=10, pady=10)
@@ -890,18 +887,14 @@ class ADCGUI(tk.Tk):
 
         try:
             sample_period         = float(self.ADC_period_var.get())
-            learning_rate         = float(self.ADC_lr_var.get())
-            min_step              = int(self.ADC_min_step_var.get())
+            kp                    = float(self.ADC_lr_var.get())
             max_step              = int(self.ADC_max_step_var.get())
             pulses_per_unit       = float(self.ADC_pulses_per_unit_var.get())
             convergence_threshold = float(self.ADC_convergence_threshold_var.get())
-            settle_time           = float(self.ADC_settle_time_var.get())
             if pulses_per_unit <= 0:
                 raise ValueError("Piezo calibration factor must be positive")
             if convergence_threshold < 0:
                 raise ValueError("Convergence threshold must be non-negative")
-            if settle_time < 0:
-                raise ValueError("Settle time must be non-negative")
         except ValueError as e:
             messagebox.showerror("Error", f"Invalid ADC parameters: {e}")
             return
@@ -912,13 +905,10 @@ class ADCGUI(tk.Tk):
 
         if not self.ADC_worker or not self.ADC_worker.running:
             self.ADC_worker = ADCControlThread(self, sample_period=sample_period)
-            self.ADC_worker.learning_rate_x       = learning_rate
-            self.ADC_worker.learning_rate_y       = learning_rate
-            self.ADC_worker.min_step_pulses       = min_step
+            self.ADC_worker.kp                    = kp
             self.ADC_worker.max_step_pulses       = max_step
             self.ADC_worker.pulses_per_unit       = pulses_per_unit
             self.ADC_worker.convergence_threshold = convergence_threshold
-            self.ADC_worker.settle_time           = settle_time
             self.ADC_active = True
             self.ADC_worker.start()
 
